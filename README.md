@@ -38,38 +38,38 @@ This demo showcases:
 
 # 📸 Platform Screenshots
 
-# Swagger API Interface
+## Swagger API Interface
 
-## API Endpoints
-![Swagger API](images/swaggerui/swagger-api-overview.png)
+### API Endpoints
+![Swagger API](cloudops-agent/images/swagger.ui/swagger-api-overview.png)
 
-## Test Trigger Endpoint
-![Trigger Endpoint](images/swaggerui/incident-trigger-api.png)
+### Test Trigger Endpoint
+![Trigger Endpoint](cloudops-agent/images/swagger.ui/incident-trigger-api.png)
 
-## API Response Validation
-![Response Validation](images/swaggerui/swagger-response-validation.png)
+### API Response Validation
+![Response Validation](cloudops-agent/images/swagger.ui/swagger-response-validation.png)
 
 ---
 
-# Grafana Observability Dashboards
+## Grafana Observability Dashboards
 
-## AI Agent Latency
-![AI Agent Latency](images/grafana/ai-agent-latency.png)
+### AI Agent Latency
+![AI Agent Latency](cloudops-agent/images/grafana/ai-agent-latency.png)
 
-## AWS Cost Trend
-![AWS Cost Trend](images/grafana/aws-cost-trend.png)
+### AWS Cost Trend
+![AWS Cost Trend](cloudops-agent/images/grafana/aws-cost-trend.png)
 
-## Alerts Processed
-![Alerts Processed](images/grafana/alerts-processed.png)
+### Alerts Processed
+![Alerts Processed](cloudops-agent/images/grafana/alerts-processed.png)
 
-## Failure Rate Dashboard
-![Failure Rate](images/grafana/failure-rate-dashboard.png)
+### Failure Rate Dashboard
+![Failure Rate](cloudops-agent/images/grafana/failure-rate-dashboard.png)
 
-## LLM Token Usage
-![LLM Token Usage](images/grafana/llm-token-usage.png)
+### LLM Token Usage
+![LLM Token Usage](cloudops-agent/images/grafana/llm-token-usage.png)
 
-## Remediation Success Rate
-![Remediation Success Rate](images/grafana/remediation-success-rate.png)
+### Remediation Success Rate
+![Remediation Success Rate](cloudops-agent/images/grafana/remediation-success-rate.png)
 ----------------------------------------------------------------------------------------------------------------
 # 🚀 Key Features
 
