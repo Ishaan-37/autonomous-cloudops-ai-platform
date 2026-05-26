@@ -35,6 +35,41 @@ This demo showcases:
 - Grafana observability dashboards
 - AI-powered remediation flow
 - Infrastructure automation lifecycle
+
+# 📸 Platform Screenshots
+
+# Swagger API Interface
+
+## API Endpoints
+![Swagger API](images/swaggerui/swagger-api-overview.png)
+
+## Test Trigger Endpoint
+![Trigger Endpoint](images/swaggerui/incident-trigger-api.png)
+
+## API Response Validation
+![Response Validation](images/swaggerui/swagger-response-validation.png)
+
+---
+
+# Grafana Observability Dashboards
+
+## AI Agent Latency
+![AI Agent Latency](images/grafana/ai-agent-latency.png)
+
+## AWS Cost Trend
+![AWS Cost Trend](images/grafana/aws-cost-trend.png)
+
+## Alerts Processed
+![Alerts Processed](images/grafana/alerts-processed.png)
+
+## Failure Rate Dashboard
+![Failure Rate](images/grafana/failure-rate-dashboard.png)
+
+## LLM Token Usage
+![LLM Token Usage](images/grafana/llm-token-usage.png)
+
+## Remediation Success Rate
+![Remediation Success Rate](images/grafana/remediation-success-rate.png)
 ----------------------------------------------------------------------------------------------------------------
 # 🚀 Key Features
 
