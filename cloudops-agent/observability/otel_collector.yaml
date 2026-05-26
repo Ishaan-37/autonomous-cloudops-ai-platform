@@ -1,0 +1,166 @@
+# ============================================================
+# observability/otel_collector.yaml
+# OpenTelemetry Collector deployment in EKS.
+#
+# WHAT DOES THE OTEL COLLECTOR DO?
+#   It's a middle layer between your app and observability backends.
+#   Your app sends telemetry to the collector.
+#   The collector processes and forwards to the right backend:
+#     Traces  → Grafana Tempo
+#     Metrics → Prometheus
+#     Logs    → Grafana Loki
+#
+# WHY NOT SEND DIRECTLY FROM APP TO BACKEND?
+#   1. Decoupling: change backends without changing app code
+#   2. Buffering: collector handles retries, your app doesn't block
+#   3. Processing: filter, sample, enrich data in one place
+#   4. Protocol conversion: app sends OTLP, backend accepts many formats
+#
+# DEPLOY:
+#   kubectl apply -f observability/otel_collector.yaml
+# ============================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: cloudops-staging
+data:
+  config.yaml: |
+    # ── Receivers: how data comes IN ────────────────────────
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317    # Your app sends here
+          http:
+            endpoint: 0.0.0.0:4318    # HTTP alternative
+
+      # Also scrape Prometheus metrics from your app
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: cloudops-agent
+              static_configs:
+                - targets: ['cloudops-agent:8080']
+              scrape_interval: 30s
+
+    # ── Processors: transform data in-flight ─────────────────
+    processors:
+      # Add batch processing (efficient, reduces API calls)
+      batch:
+        timeout:           10s
+        send_batch_size:   1024
+
+      # Add memory limit (don't OOM the collector pod)
+      memory_limiter:
+        check_interval:  1s
+        limit_mib:       400
+        spike_limit_mib: 100
+
+      # Add resource attributes to all telemetry
+      resource:
+        attributes:
+          - key:    cluster
+            value:  cloudops-cluster-staging
+            action: insert
+          - key:    region
+            value:  us-east-1
+            action: insert
+
+    # ── Exporters: where data goes OUT ───────────────────────
+    exporters:
+      # Traces → Grafana Tempo
+      otlp/tempo:
+        endpoint: tempo:4317
+        tls:
+          insecure: true
+
+      # Metrics → Prometheus (scrape endpoint)
+      prometheus:
+        endpoint: "0.0.0.0:8889"     # Prometheus scrapes this
+
+      # Logs → Grafana Loki
+      loki:
+        endpoint: http://loki:3100/loki/api/v1/push
+
+      # Debug: print to stdout (useful during development)
+      debug:
+        verbosity: basic
+
+    # ── Service: wire everything together ────────────────────
+    service:
+      pipelines:
+        traces:
+          receivers:  [otlp]
+          processors: [memory_limiter, batch, resource]
+          exporters:  [otlp/tempo]
+
+        metrics:
+          receivers:  [otlp, prometheus]
+          processors: [memory_limiter, batch, resource]
+          exporters:  [prometheus]
+
+        logs:
+          receivers:  [otlp]
+          processors: [memory_limiter, batch, resource]
+          exporters:  [loki]
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: cloudops-staging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.104.0
+          args: ["--config=/etc/otel/config.yaml"]
+          ports:
+            - containerPort: 4317   # OTLP gRPC
+            - containerPort: 4318   # OTLP HTTP
+            - containerPort: 8889   # Prometheus metrics
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+          resources:
+            requests:
+              cpu:    "100m"
+              memory: "200Mi"
+            limits:
+              cpu:    "500m"
+              memory: "500Mi"
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: cloudops-staging
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+    - name: prometheus
+      port: 8889
+      targetPort: 8889

@@ -1,0 +1,339 @@
+# ============================================================
+# helm/agent/templates/deployment.yaml
+# Kubernetes Deployment for the CloudOps Agent FastAPI app.
+#
+# WHAT IS A DEPLOYMENT?
+#   A Deployment tells Kubernetes:
+#   "Run N copies of this container, keep them healthy,
+#    and roll out updates without downtime."
+#
+# KEY CONCEPTS:
+#   - spec.replicas: how many pods to run
+#   - spec.strategy.rollingUpdate: zero-downtime deploys
+#   - resources.requests: guaranteed CPU/memory
+#   - resources.limits: maximum CPU/memory
+#   - livenessProbe: restart pod if unhealthy
+#   - readinessProbe: remove from load balancer if not ready
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudops-agent
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: cloudops-agent
+    version: {{ .Values.image.tag | quote }}
+    environment: {{ .Values.environment }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+
+  # Rolling update: bring up new pods before killing old ones
+  # maxUnavailable: 0 = never have fewer pods than desired (no downtime)
+  # maxSurge: 1 = can temporarily have 1 extra pod during update
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+  selector:
+    matchLabels:
+      app: cloudops-agent
+
+  template:
+    metadata:
+      labels:
+        app: cloudops-agent
+        version: {{ .Values.image.tag | quote }}
+      annotations:
+        # Force pod restart when config changes (even if image tag is same)
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        # Prometheus scraping annotations
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+
+    spec:
+      # Use the service account with IRSA role (AWS permissions)
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+
+      # Security: run as non-root user
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      containers:
+        - name: cloudops-agent
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          ports:
+            - containerPort: 8080
+              name: http
+
+          # Environment variables (non-secret)
+          # Secrets come from AWS Secrets Manager via the app code
+          env:
+            - name: CLOUDOPS_ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+            - name: AWS_REGION
+              value: {{ .Values.env.AWS_REGION | quote }}
+            - name: SLACK_ALERT_CHANNEL
+              value: {{ .Values.env.SLACK_ALERT_CHANNEL | quote }}
+            - name: AUDIT_TABLE_NAME
+              value: {{ .Values.env.AUDIT_TABLE_NAME | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.env.LOG_LEVEL | quote }}
+            # OTel collector endpoint (running in same namespace)
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4317"
+            - name: OTEL_SERVICE_NAME
+              value: "cloudops-agent"
+            # Pod identity info (useful for logging)
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+          resources:
+            requests:
+              cpu:    {{ .Values.resources.requests.cpu | quote }}
+              memory: {{ .Values.resources.requests.memory | quote }}
+            limits:
+              cpu:    {{ .Values.resources.limits.cpu | quote }}
+              memory: {{ .Values.resources.limits.memory | quote }}
+
+          # Liveness: if this fails 3 times, restart the pod
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds:       {{ .Values.livenessProbe.periodSeconds }}
+            failureThreshold:    {{ .Values.livenessProbe.failureThreshold }}
+
+          # Readiness: if this fails, remove pod from load balancer
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds:       {{ .Values.readinessProbe.periodSeconds }}
+            failureThreshold:    {{ .Values.readinessProbe.failureThreshold }}
+
+          # Volume mount for SQLite checkpoint database
+          volumeMounts:
+            - name: checkpoint-storage
+              mountPath: /app/data
+
+      volumes:
+        - name: checkpoint-storage
+          persistentVolumeClaim:
+            claimName: cloudops-agent-checkpoints
+
+      # Spread pods across availability zones
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: cloudops-agent
+
+      nodeSelector: {{ toYaml .Values.nodeSelector | nindent 8 }}
+      tolerations:  {{ toYaml .Values.tolerations  | nindent 8 }}
+
+---
+# ── Service ─────────────────────────────────────────────────
+# Exposes the deployment internally within the cluster
+# The Ingress routes external traffic to this Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudops-agent
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: cloudops-agent
+spec:
+  type: ClusterIP
+  selector:
+    app: cloudops-agent
+  ports:
+    - port: 80
+      targetPort: 8080
+      name: http
+
+---
+# ── Persistent Volume Claim ──────────────────────────────────
+# Storage for SQLite checkpoint database
+# Persists across pod restarts and deployments
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cloudops-agent-checkpoints
+  namespace: {{ .Values.namespace }}
+spec:
+  accessModes:
+    - ReadWriteOnce       # Only one pod can write at a time (fine for 1 replica)
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+
+---
+# ── Horizontal Pod Autoscaler ────────────────────────────────
+# Automatically scales replicas based on CPU usage
+# Agent spikes to high CPU during LLM calls (normal pattern)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cloudops-agent
+  namespace: {{ .Values.namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cloudops-agent
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type:               AverageUtilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+
+---
+# ── Pod Disruption Budget ────────────────────────────────────
+# Ensures at least 1 pod is always running during:
+# - Node upgrades
+# - Cluster scaling
+# - Voluntary disruptions
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cloudops-agent
+  namespace: {{ .Values.namespace }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: cloudops-agent
+
+---
+# ── Service Account ──────────────────────────────────────────
+# Links to IAM role via IRSA annotation
+# This is how the pod gets AWS permissions without access keys
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.serviceAccount.name }}
+  namespace: {{ .Values.namespace }}
+  annotations:
+    # This annotation = pod assumes the IAM role = gets AWS permissions
+    eks.amazonaws.com/role-arn: {{ .Values.serviceAccount.annotations | toJson | fromJson | index "eks.amazonaws.com/role-arn" }}
+
+---
+# ── Ingress (AWS ALB) ────────────────────────────────────────
+# Exposes the API to the internet via AWS Application Load Balancer
+# Requires: AWS Load Balancer Controller installed in EKS
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cloudops-agent
+  namespace: {{ .Values.namespace }}
+  annotations:
+    kubernetes.io/ingress.class:                    alb
+    alb.ingress.kubernetes.io/scheme:               internet-facing
+    alb.ingress.kubernetes.io/target-type:          ip
+    alb.ingress.kubernetes.io/healthcheck-path:     /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/success-codes:        "200"
+spec:
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /webhook
+            pathType: Prefix
+            backend:
+              service:
+                name: cloudops-agent
+                port:
+                  number: 80
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: cloudops-agent
+                port:
+                  number: 80
+          - path: /runs
+            pathType: Prefix
+            backend:
+              service:
+                name: cloudops-agent
+                port:
+                  number: 80
+
+---
+# ── CronJob: FinOps Cost Optimizer ──────────────────────────
+# Runs the cost optimization analysis every Monday at 8am UTC
+# This is a separate job from the main agent — it runs on a schedule
+# not in response to alarms
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cloudops-finops-optimizer
+  namespace: {{ .Values.namespace }}
+spec:
+  # Cron schedule: minute hour day month weekday
+  # "0 8 * * 1" = 8:00 AM UTC every Monday
+  schedule: "0 8 * * 1"
+
+  # If a job is still running when next schedule fires, skip it
+  concurrencyPolicy: Forbid
+
+  # Keep last 3 successful job logs, last 1 failed
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+
+  jobTemplate:
+    spec:
+      # Retry up to 2 times if the job fails
+      backoffLimit: 2
+
+      template:
+        spec:
+          serviceAccountName: {{ .Values.serviceAccount.name }}
+
+          restartPolicy: OnFailure
+
+          containers:
+            - name: finops-optimizer
+              image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+              command: ["python", "-m", "agent.nodes.cost_optimizer_node"]
+
+              env:
+                - name: CLOUDOPS_ENVIRONMENT
+                  value: {{ .Values.environment | quote }}
+                - name: AWS_REGION
+                  value: {{ .Values.env.AWS_REGION | quote }}
+                - name: SLACK_FINOPS_CHANNEL
+                  value: "#cloudops-finops"
+                - name: OTEL_SERVICE_NAME
+                  value: "cloudops-finops"
+
+              resources:
+                requests:
+                  cpu:    "100m"
+                  memory: "256Mi"
+                limits:
+                  cpu:    "500m"
+                  memory: "512Mi"

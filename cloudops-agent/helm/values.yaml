@@ -1,0 +1,170 @@
+# ============================================================
+# helm/values.yaml
+# Default Helm chart values for CloudOps Agent deployment.
+#
+# WHAT IS HELM?
+#   Helm is the package manager for Kubernetes.
+#   Instead of writing raw YAML files for every K8s resource,
+#   Helm lets you use templates with variables.
+#   This file contains all the variables.
+#
+# OVERRIDE FOR DIFFERENT ENVS:
+#   helm upgrade --install cloudops-agent ./helm \
+#     --values helm/values.yaml \
+#     --values helm/values.staging.yaml   <- overrides
+#
+# DEPLOY COMMAND:
+#   helm upgrade --install cloudops-agent ./helm/agent \
+#     --namespace cloudops-staging \
+#     --values helm/values.yaml \
+#     --set image.tag=$GIT_SHA \
+#     --wait --timeout=5m
+# ============================================================
+
+# ── Image ─────────────────────────────────────────────────────
+image:
+  repository: YOUR_AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/cloudops-agent
+  tag:        "latest"          # overridden by CI/CD with git SHA
+  pullPolicy: IfNotPresent
+
+# ── Replicas ──────────────────────────────────────────────────
+replicaCount: 2                 # Always run 2 for HA (1 per AZ)
+
+# ── Environment ───────────────────────────────────────────────
+environment: staging            # staging | production
+
+# ── Resources ─────────────────────────────────────────────────
+# Requests = guaranteed resources
+# Limits = maximum allowed
+# Agent uses more CPU/memory during LLM calls (spiky pattern)
+resources:
+  requests:
+    cpu:    "250m"              # 0.25 vCPU guaranteed
+    memory: "512Mi"             # 512 MB guaranteed
+  limits:
+    cpu:    "1000m"             # 1 vCPU max (spikes during LLM calls)
+    memory: "1Gi"               # 1 GB max
+
+# ── Service ───────────────────────────────────────────────────
+service:
+  type: ClusterIP               # Internal only (ALB Ingress exposes externally)
+  port: 8080
+
+# ── Ingress (exposes API to internet via AWS ALB) ─────────────
+ingress:
+  enabled: true
+  className: alb                # Uses AWS Load Balancer Controller
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/certificate-arn: ""   # add ACM cert ARN for HTTPS
+  host: api.cloudops-agent.yourdomain.com           # change to your domain
+  paths:
+    - path: /webhook/cloudwatch
+      pathType: Prefix
+    - path: /webhook/slack
+      pathType: Prefix
+    - path: /health
+      pathType: Exact
+    - path: /runs
+      pathType: Prefix
+
+# ── Auto Scaling ──────────────────────────────────────────────
+# Scale based on CPU — agent spikes during LLM calls
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+# ── Health Checks ─────────────────────────────────────────────
+# K8s uses these to decide if a pod is healthy
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 15       # Wait 15s before first check (startup time)
+  periodSeconds:       10       # Check every 10s
+  failureThreshold:    3        # Restart after 3 consecutive failures
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds:       5
+  failureThreshold:    2        # Remove from load balancer after 2 failures
+
+# ── Service Account (IRSA) ────────────────────────────────────
+# Links the K8s pod to the IAM role created in Phase 2
+serviceAccount:
+  create: true
+  name:   cloudops-agent
+  annotations:
+    # This annotation = the pod gets AWS permissions via IRSA
+    # Replace with your actual role ARN from terraform output agent_role_arn
+    eks.amazonaws.com/role-arn: arn:aws:iam::YOUR_ACCOUNT_ID:role/cloudops-agent-role-staging
+
+# ── Environment Variables (non-secret) ───────────────────────
+# Secrets come from AWS Secrets Manager via the app code
+# Only non-sensitive config goes here
+env:
+  CLOUDOPS_ENVIRONMENT: staging
+  AWS_REGION:           us-east-1
+  SLACK_ALERT_CHANNEL:  "#cloudops-alerts"
+  AUDIT_TABLE_NAME:     cloudops-audit-log
+  LOG_LEVEL:            INFO
+
+# ── Pod Settings ──────────────────────────────────────────────
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port:   "8080"
+  prometheus.io/path:   "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser:    1000            # matches the cloudops user in Dockerfile
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem:   false  # needs write for SQLite checkpoint DB
+  capabilities:
+    drop: ["ALL"]
+
+# ── Volume for SQLite checkpoint DB ───────────────────────────
+# The LangGraph checkpointer writes to checkpoints.db
+# This persists across pod restarts
+persistence:
+  enabled:      true
+  size:         1Gi
+  storageClass: gp3
+  mountPath:    /app/data
+
+# ── Pod Disruption Budget ─────────────────────────────────────
+# Ensures at least 1 pod is always running during node drains
+podDisruptionBudget:
+  enabled:        true
+  minAvailable:   1
+
+# ── Node Selector ─────────────────────────────────────────────
+# Run only on agent-labeled nodes (from Phase 2 EKS node group)
+nodeSelector:
+  role: agent
+
+# ── Tolerations ───────────────────────────────────────────────
+tolerations: []
+
+affinity:
+  # Spread pods across AZs for high availability
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key:      app
+                operator: In
+                values:   [cloudops-agent]
+          topologyKey: topology.kubernetes.io/zone

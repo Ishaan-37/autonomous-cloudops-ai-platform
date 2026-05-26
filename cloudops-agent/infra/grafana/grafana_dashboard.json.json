@@ -1,0 +1,168 @@
+{
+  "__comment": "Grafana Dashboard for CloudOps Agent. Import via Grafana UI: Dashboards → Import → paste this JSON",
+  "title": "CloudOps Agent — Operations Dashboard",
+  "uid": "cloudops-agent-main",
+  "tags": ["cloudops", "agent", "finops"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Alarms Processed (last 24h)",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "targets": [{
+        "expr": "sum(increase(cloudops_alarms_processed_total[24h]))",
+        "legendFormat": "Alarms"
+      }],
+      "options": {
+        "colorMode": "background",
+        "thresholds": {
+          "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 10 },
+            { "color": "red", "value": 50 }
+          ]
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Auto-Remediations Executed (last 24h)",
+      "type": "stat",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "targets": [{
+        "expr": "sum(increase(cloudops_remediations_executed_total[24h]))",
+        "legendFormat": "Remediations"
+      }],
+      "options": { "colorMode": "background" }
+    },
+    {
+      "id": 3,
+      "title": "Agent Run Duration (p95)",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum(rate(cloudops_agent_run_duration_seconds_bucket[1h])) by (le))",
+        "legendFormat": "p95 duration"
+      }],
+      "options": {
+        "unit": "s",
+        "thresholds": {
+          "steps": [
+            { "color": "green",  "value": null },
+            { "color": "yellow", "value": 60 },
+            { "color": "red",    "value": 120 }
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "LLM API Latency (p95)",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum(rate(cloudops_llm_latency_seconds_bucket[1h])) by (le))",
+        "legendFormat": "LLM p95"
+      }],
+      "options": {
+        "unit": "s",
+        "thresholds": {
+          "steps": [
+            { "color": "green",  "value": null },
+            { "color": "yellow", "value": 10 },
+            { "color": "red",    "value": 30 }
+          ]
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Monthly AWS Cost (USD)",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "targets": [{
+        "expr": "cloudops_finops_monthly_cost_usd",
+        "legendFormat": "Monthly Cost"
+      }],
+      "options": {
+        "unit": "currencyUSD",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 6,
+      "title": "Alarms by Severity (last 24h)",
+      "type": "piechart",
+      "gridPos": { "x": 0, "y": 4, "w": 8, "h": 8 },
+      "targets": [{
+        "expr": "sum by (severity) (increase(cloudops_alarms_processed_total[24h]))",
+        "legendFormat": "{{ severity }}"
+      }]
+    },
+    {
+      "id": 7,
+      "title": "Agent Run Duration Over Time",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 4, "w": 16, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(cloudops_agent_run_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(cloudops_agent_run_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(cloudops_agent_run_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ],
+      "options": { "unit": "s" }
+    },
+    {
+      "id": 8,
+      "title": "Approval Decisions",
+      "type": "bargauge",
+      "gridPos": { "x": 0, "y": 12, "w": 8, "h": 6 },
+      "targets": [{
+        "expr": "sum by (decision) (increase(cloudops_approvals_total[7d]))",
+        "legendFormat": "{{ decision }}"
+      }]
+    },
+    {
+      "id": 9,
+      "title": "Node Errors by Node",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 12, "w": 16, "h": 6 },
+      "targets": [{
+        "expr": "sum by (node) (increase(cloudops_node_errors_total[5m]))",
+        "legendFormat": "{{ node }}"
+      }]
+    },
+    {
+      "id": 10,
+      "title": "LLM Calls per Minute",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 18, "w": 12, "h": 6 },
+      "targets": [{
+        "expr": "sum(rate(cloudops_llm_calls_total[1m])) * 60",
+        "legendFormat": "LLM calls/min"
+      }]
+    },
+    {
+      "id": 11,
+      "title": "Cost Savings Identified (Cumulative)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 18, "w": 12, "h": 6 },
+      "targets": [{
+        "expr": "sum(cloudops_finops_savings_identified_usd_total)",
+        "legendFormat": "Total savings identified (USD)"
+      }],
+      "options": { "unit": "currencyUSD" }
+    }
+  ]
+}
